@@ -4,7 +4,7 @@ venv/
 .env
 *.pyc
 .ipynb_checkpoints/
-data/
 outputs/
-*.mp4
 *.avi
+*.mp4
+*.zip
