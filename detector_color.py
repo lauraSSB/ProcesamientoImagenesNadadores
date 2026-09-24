@@ -46,30 +46,36 @@ def segmentar_is(frame_bgr: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# ISL, IL, ILP – vistas laterales: rango HSV completo + morfología
+# ISL, IL – vistas laterales: solo canal H + votación direccional + mediana
 # ---------------------------------------------------------------------------
 
-# H: 0-179, S: 0-255, V: 0-255
-RANGOS_AGUA: dict[str, tuple[np.ndarray, np.ndarray]] = {
-    "ISL": (np.array([85,  40,  70]), np.array([135, 255, 255])),
-    "IL":  (np.array([85,  30,  60]), np.array([135, 255, 255])),
-    "ILP": (np.array([80,  40,  30]), np.array([140, 255, 200])),
+# Rango de tono H del agua (mismo criterio que IS).
+H_AGUA_LATERAL = (90, 110)
+
+# Kernel de votación por vista:
+#   IL  → 15×1 (horizontal): refuerza cuerdas que corren horizontalmente
+#   ISL → 5×5  (cuadrado):   sin dirección privilegiada (cuerdas diagonales)
+_KERNEL_VOTACION: dict[str, tuple[int, int]] = {
+    "IL":  (15, 1),
+    "ISL": (5, 5),
 }
-RANGO_DEFAULT = (np.array([85, 30, 30]), np.array([140, 255, 255]))
 
 VISTAS_LATERALES = {"IL", "ISL"}
+VISTAS = ("IS", "IL", "ISL", "ILP")
 
-VISTAS = ("IS", *RANGOS_AGUA)
 
+def segmentar_agua(frame_bgr: np.ndarray, vista: str) -> np.ndarray:
+    """Máscara de agua para vistas laterales (IL, ISL).
 
-def segmentar_agua(frame_bgr: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
-    """Máscara de agua para vistas laterales (ISL, IL, ILP)."""
+    Usa solo el canal H (90-110) con votación de mayoría en una ventana
+    direccional y una mediana 3×3 final — mismo enfoque que IS pero con
+    el kernel orientado según la dirección de las cuerdas en cada vista.
+    """
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-    mascara = cv2.inRange(hsv, lower, upper)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    mascara = cv2.morphologyEx(mascara, cv2.MORPH_OPEN, kernel)
-    mascara = cv2.morphologyEx(mascara, cv2.MORPH_CLOSE, kernel)
-    return mascara
+    agua = cv2.inRange(hsv[..., 0], *H_AGUA_LATERAL)
+    kw, kh = _KERNEL_VOTACION.get(vista, (5, 5))
+    votacion = ((cv2.blur(agua, (kw, kh)) > 127) * 255).astype(np.uint8)
+    return cv2.medianBlur(votacion, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -78,8 +84,6 @@ def segmentar_agua(frame_bgr: np.ndarray, lower: np.ndarray, upper: np.ndarray) 
 
 def procesar_imagen(
     ruta: Path,
-    lower: np.ndarray,
-    upper: np.ndarray,
     vista: str,
     carpeta_salida: Path,
 ) -> None:
@@ -91,7 +95,7 @@ def procesar_imagen(
     if vista == "IS":
         mascara = segmentar_is(frame)
     elif vista in VISTAS_LATERALES:
-        mascara = segmentar_agua(frame, lower, upper)
+        mascara = segmentar_agua(frame, vista)
     else:
         print(f"  [!] Vista '{vista}' no implementada aún.")
         return
@@ -110,16 +114,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Genera máscara de piscina: blanco=agua, negro=separadores/fondo."
     )
     parser.add_argument("--imagen", type=Path, help="Procesa una sola imagen.")
-    parser.add_argument(
-        "--vista", default="IL", choices=VISTAS,
-        help="Tipo de vista (por defecto: IL).",
-    )
+    parser.add_argument("--vista", default="IL", choices=VISTAS,
+                        help="Tipo de vista (por defecto: IL).")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    lower, upper = RANGOS_AGUA.get(args.vista, RANGO_DEFAULT)
 
     if args.imagen:
         rutas = [args.imagen]
@@ -133,11 +134,12 @@ def main() -> None:
     if args.vista == "IS":
         print(f"Vista: IS | H {H_AGUA_IS[0]}-{H_AGUA_IS[1]}, votación 1×15, mediana 3×3")
     else:
-        print(f"Vista: {args.vista} | HSV agua lower={lower.tolist()} upper={upper.tolist()}")
+        kw, kh = _KERNEL_VOTACION.get(args.vista, (5, 5))
+        print(f"Vista: {args.vista} | H {H_AGUA_LATERAL[0]}-{H_AGUA_LATERAL[1]}, votación {kw}×{kh}, mediana 3×3")
     print(f"Imágenes: {len(rutas)} | Salida: {carpeta_salida}\n")
 
     for ruta in rutas:
-        procesar_imagen(ruta, lower, upper, args.vista, carpeta_salida)
+        procesar_imagen(ruta, args.vista, carpeta_salida)
 
     print(f"\nListo. Revisá los resultados en {carpeta_salida}/")
 
